@@ -1,6 +1,6 @@
 <?php
 /*
- * Menetrendmahináló v0.1 beta
+ * Menetrendmahináló v0.2 beta
  * Írta: Keleti Márton (K.Marci)
  * E-mail: kmarton@vipmail.hu
  *
@@ -9,8 +9,14 @@
  * vagy lásd a mellékelt LICENC.txt állományt.
  */
 
+setlocale(LC_ALL, "");
+define("CHARSET", "UTF-8");
+define("FILESYSTEM_CHARSET", "CP1250");
+define("CMD_CHARSET", "CP852");
+define("VERSION", "v0.2 beta");
+
 define("ABOUT",
-'Menetrendmahináló v0.1 beta
+'Menetrendmahináló '.VERSION.'
 Írta: Keleti Márton (K.Marci)
 E-mail: kmarton@vipmail.hu
 
@@ -80,6 +86,10 @@ function popup($message = "", $type = 'info', $waitForResponse = true, $borders 
         $resp = $dialog;
     }
     return $resp;
+}
+
+function exceptionHandler(Exception $e) {
+    popup("Nem kezelt kivétel történt: ".$e->getMessage()."\r\nStack trace:\r\n".$e->getTraceAsString(), "error");
 }
 
 function readTrf($filename) {
@@ -411,7 +421,6 @@ function load() {
     global $folder, $activity, $bizt, $model, $act, $trf, $tit, $frame1, $frame2, $act_path, $trf_path;
     static $tit_path;
     if(!$act_path = $activity->get_filename()) {
-        $loadDialog->hide_all();
         popup("Válassz egy activityt!", "error");
         return true;
     }
@@ -446,8 +455,9 @@ function load() {
         }
     }
     $frame1->set_label(basename($act_path)." | ".basename($trf_path));
+    $GLOBALS['button2']->set_sensitive(true);
     //$dialog->destroy();
-    $GLOBALS['wnd']->set_position(Gtk::WIN_POS_CENTER);
+    //$GLOBALS['wnd']->set_position(Gtk::WIN_POS_CENTER);
 }
 
 function load_srv() {
@@ -471,6 +481,7 @@ function load_srv() {
         $ind = $station['DepartTime'];
         $model2->append(array($nev, timeConv($erk), timeConv($ind)));
     }
+    $GLOBALS['button3']->set_sensitive(true);
     Gtk::timeout_add(10, array($frame2, 'queue_draw'));
 }
 
@@ -587,26 +598,49 @@ function save() {
     popup("Mentve", "info");
 }
 
+function erk() {
+    global $act, $trf, $srv_name, $model2, $combo1, $combo2, $combo3, $hentry, $mentry, $sentry;
+    $player = preg_match('~Játékos \(.+\)~', $srv_name);
+    if($player) {
+        $traffic = &$act['file']['player_service']['player_traffic'];
+    }
+    else {
+        $traffic = &$trf['srv'][$srv_name];
+    }
+    $h = (int)$hentry->get_text(); $m = (int)$mentry->get_text(); $s = (int)$sentry->get_text();
+    $mennyit = timeConv("$h:$m:$s");
+    $mit = $combo1->get_active();
+    $hogyan = $combo3->get_active(); //0 = +   1 = -
+    writeLog("$srv_name járat összes ".$combo1->get_active_text()." = ".$combo2->get_active_text()." ".$combo3->get_active_text()." $h:$m:$s");
+    foreach($traffic as $sor => $station) {
+        if(!is_array($station))
+            continue;
+        $honnan = $combo2->get_active() ? $traffic[$sor]['DepartTime'] : $traffic[$sor]['ArrivalTime']; //0=érk 1=ind
+        $iter = $model2->get_iter_from_string($sor-1);
+        if($mit) { //indulást módosítunk
+            $traffic[$sor]['DepartTime'] = (string)($hogyan ? $honnan - $mennyit : $honnan + $mennyit);
+            $model2->set($iter, 2, timeConv($traffic[$sor]['DepartTime']));
+        }
+        else {  //érkezést módosítunk
+            $traffic[$sor]['ArrivalTime'] = (string)($hogyan ? $honnan - $mennyit : $honnan + $mennyit);
+            $model2->set($iter, 1, timeConv($traffic[$sor]['ArrivalTime']));
+        }
+    }
+}
+
 /////////////////////////
 /////////////////////////
 
-define("CHARSET", "UTF-8");
-define("FILESYSTEM_CHARSET", "CP1250");
-define("CMD_CHARSET", "CP852");
-define("VERSION", "v0.1 beta");
-setlocale(LC_ALL, "");
-/*//$trf = readTrf('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\TRAFFIC\a26040 - 63810.trf');
-//$tit = readTit('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\100a-140.tit');
-//writeTrf('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\TRAFFIC\a26040 - 63810_2.trf', $trf);
-//$act = readAct('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\ACTIVITIES\7009.act');
-//writeAct('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\ACTIVITIES\7009_2.act', $act); */
-//stfParser('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\ACTIVITIES\7009.act');
+set_exception_handler("exceptionHandler");
+writeLog(html_entity_decode(strip_tags(ABOUT)));
+
 $shell = new COM('WScript.Shell');
 try {
     $default = $shell->regRead('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Microsoft Games\Train Simulator\1.0\Path');
 }
 catch (Exception $e) {
-    $default = __DIR__;
+    $default = iconv(FILESYSTEM_CHARSET, CHARSET, __DIR__);
+    unset($e);
 }
 unset($shell);
 
@@ -618,6 +652,9 @@ $menuitem = new GtkMenuItem('_Súgó');
 $helpmenu = new GtkMenu();
 $help = new GtkImageMenuItem("Használat");
 $about = new GtkImageMenuItem("Névjegy");
+$menuitem2 = new GtkMenuItem('_Eszközök');
+$toolsmenu = new GtkMenu();
+
 
 $aboutDialog = popup(ABOUT, "info", false);
 $aboutDialog->hide_all();
@@ -646,8 +683,42 @@ $bizt = new GtkCheckButton();
 $buttonbox = new GtkHButtonBox();
 $button = new GtkButton("Betölt");
 $button2 = new GtkButton("Ment");
+$button3 = new GtkButton("Mehet");
 $frame1 = new GtkFrame();
 $frame2 = new GtkFrame();
+
+$hbox = new GtkHBox();
+$combo1 = GtkComboBox::new_text();
+$combo1->append_text("Érkezés");
+$combo1->append_text("Indulás");
+$combo1->set_active(0);
+$combo2 = GtkComboBox::new_text();
+$combo2->append_text("Érkezés");
+$combo2->append_text("Indulás");
+$combo2->set_active(0);
+$combo3 = GtkComboBox::new_text();
+$combo3->append_text("+");
+$combo3->append_text("-");
+$combo3->set_active(0);
+$hentry = new GtkEntry();
+$hentry->set_max_length(2);
+$hentry->set_width_chars(2);
+$mentry = new GtkEntry();
+$mentry->set_max_length(2);
+$mentry->set_width_chars(2);
+$sentry = new GtkEntry();
+$sentry->set_max_length(2);
+$sentry->set_width_chars(2);
+$hbox->pack_start($combo1);
+$hbox->pack_start(new GtkLabel("="));
+$hbox->pack_start($combo2);
+$hbox->pack_start($combo3);
+$hbox->pack_start($hentry);
+$hbox->pack_start(new GtkLabel(":"));
+$hbox->pack_start($mentry);
+$hbox->pack_start(new GtkLabel(":"));
+$hbox->pack_start($sentry);
+$hbox->pack_start($button3);
 
 
 $model = new GtkListStore(64, 64);  // GObject::TYPE_STRING === (int)64
@@ -697,7 +768,10 @@ $buttonbox->pack_start($button2);
 $button->connect('clicked', 'load');
 $button->connect_simple('clicked', array($frame2, 'set_label'), "Nincs járat kijelölve");
 $button->connect_simple('clicked', array($model2, 'clear'));
+$button2->set_sensitive(false);
+$button3->set_sensitive(false);
 $button2->connect('clicked', 'save');
+$button3->connect_simple('clicked', 'erk');
 
 $frame1->add($view);
 $frame2->add($view2);
@@ -711,8 +785,9 @@ $table->attach($activity, 1, 2, 1, 2);
 $table->attach($label3, 0, 1, 2, 3);
 $table->attach($bizt, 1, 2, 2, 3);
 $table->attach($buttonbox, 0, 2, 3, 4);
-$table->attach($frame1, 0, 1, 4, 5);
-$table->attach($frame2, 1, 2, 4, 5);
+$table->attach($hbox, 0, 2, 4, 5);
+$table->attach($frame1, 0, 1, 5, 6);
+$table->attach($frame2, 1, 2, 5, 6);
 
 $mainbox->pack_start($menubar, false, false);
 $mainbox->pack_start($table, true, true);
@@ -722,9 +797,6 @@ $filter->add_pattern("*.act");
 $filter->set_name("MSTS Activity fájlok (*.act)");
 $folder->set_current_folder($default);
 $activity->set_current_folder($default.'\ROUTES');
-
-$children = $folder->get_children();
-$list = array($children[0]->signal_list_ids($children[0]->gtype), $children[0]->signal_list_names($children[0]->gtype));
 
 //$activity->set_filename('d:\Program Files\Microsoft Games\Train Simulator\ROUTES\Alfold_6\ACTIVITIES\a5-17605-acthu.act');
 
