@@ -1,6 +1,6 @@
 <?php
 /*
- * Menetrendmahináló v0.2 beta
+ * Menetrendmahináló v0.3 beta
  * Írta: Keleti Márton (K.Marci)
  * E-mail: kmarton@vipmail.hu
  *
@@ -13,7 +13,7 @@ setlocale(LC_ALL, "");
 define("CHARSET", "UTF-8");
 define("FILESYSTEM_CHARSET", "CP1250");
 define("CMD_CHARSET", "CP852");
-define("VERSION", "v0.2 beta");
+define("VERSION", "v0.3 beta");
 
 define("ABOUT",
 'Menetrendmahináló '.VERSION.'
@@ -112,6 +112,7 @@ function readTrf($filename) {
             case "Service_Definition":
                 preg_match('~Service_Definition \( "?(.+)"? ([0-9]+) ?\)?~', $sor, $matches);
                 $srv = trim($matches[1], '"');
+                $trf['con'][$srv] = getConData($srv);
                 $trf['srv'][$srv]['start'] = $matches[2];
                 $station = 0;
                 break;
@@ -306,8 +307,11 @@ function stfNode($node) {
     }
 }
 
-function writeUnicodeFile($fp, $str) {
-    return fwrite($fp, iconv(CHARSET, "UCS-2LE", $str));
+function writeUnicodeFile($fp, $str, $close = false) {
+    $ret = fwrite($fp, iconv(CHARSET, "UCS-2LE", $str));
+    if($close)
+        fclose($fp);
+    return $ret;
 }
 
 function writeTrf($filename, $trf) {
@@ -380,6 +384,22 @@ function writeAct($filename, $act, $trf) {
     fclose($fp);
 }
 
+function getConData($srv_name) {
+    $act_dir = dirname($GLOBALS['act_path']);
+    $srv_file = iconv("UCS-2LE", CHARSET, file_get_contents(iconv(CHARSET, FILESYSTEM_CHARSET, path("$act_dir\\..\\SERVICES\\$srv_name.srv"))));
+    if(!$srv_file) {
+        $message = path("$act_dir\\..\\SERVICES\\$srv_name.srv")." nem található!";
+        writeLog($message);
+        popup($message, "error");
+    }
+    preg_match('~Train_Config \( (.+) \)\r\n~i', $srv_file, $matches);
+    $matches[1] = trim($matches[1], '" ');
+    $con_path = path("$act_dir\\..\\..\\..\\TRAINS\\CONSISTS\\$matches[1].con");
+    $con_file = iconv("UCS-2LE", CHARSET, file_get_contents(iconv(CHARSET, FILESYSTEM_CHARSET, $con_path)));
+    preg_match('~MaxVelocity \( ([0-9.]+) ([0-9.]+) \)\r\n~i', $con_file, $matches);
+    return array("con_file" => $con_file, "con_path" => $con_path, "A" => $matches[1], "B" => $matches[2], "modified" => false);
+}
+
 function quote($str) {
     return strpos($str, " ") !== false ? '"'.$str.'"' : $str;
 }
@@ -388,12 +408,16 @@ function path($path) {
     $path = str_replace("/", "\\", $path);
     $parts = explode("\\", $path);
     $ret = array();
-    foreach($parts as $n => $part) {
+    $i = 0;
+    foreach($parts as $part) {
         if($part === "..") {
-            unset($parts[$n-1], $parts[$n]);
+            unset($ret[--$i]);
+        }
+        else {
+            $ret[$i++] = $part;
         }
     }
-    $ret = implode("\\", $parts);
+    $ret = implode("\\", $ret);
     return $ret;
 }
 
@@ -402,6 +426,12 @@ function timeConv($in) {
         $sec = $in % 60;
         $min = ($in-$sec) % 3600 / 60;
         $hour = floor($in / 3600);
+        if($hour<10)
+            $hour = "0".$hour;
+        if($min<10)
+            $min = "0".$min;
+        if($sec<10)
+            $sec = "0".$sec;
         return "$hour:$min:$sec";
     }
     @list($hour, $min, $sec) = explode(":", $in);
@@ -426,6 +456,7 @@ function load() {
     }
     writeLog("Activity $act_path olvasása");
     $act = readAct(iconv(CHARSET, FILESYSTEM_CHARSET, $act_path));
+    $act['consist'] = getConData($act['file']['player_service']['name']);
     writeLog("Activity beolvasva");
     if(isset($act['file']['traffic'])) {
         $trf_path = path(dirname($act_path).'/../TRAFFIC/'.$act['file']['traffic'].'.trf');
@@ -447,11 +478,14 @@ function load() {
         file_put_contents($act_path.'.bak', file_get_contents($act_path));
         file_put_contents($trf_path.'.bak', file_get_contents($trf_path));
     }*/
+    //getConData($act['file']['player_service']['name']);
     $model->clear();
-    $model->append(array("Játékos ({$act['file']['player_service']['name']})", timeconv($act['file']['player_service']['player_traffic']['start'])));
+    $model->append(array("Játékos ({$act['file']['player_service']['name']})",
+                         timeconv($act['file']['player_service']['player_traffic']['start']),
+                         round($act['consist']['A']*3.6, 0)));
     if(is_array($trf['srv'])) {
         foreach($trf['srv'] as $name => $srv) {
-            $model->append(array($name, timeConv($srv['start'])));
+            $model->append(array($name, timeConv($srv['start']), round($trf['con'][$name]['A']*3.6, 0)));
         }
     }
     $frame1->set_label(basename($act_path)." | ".basename($trf_path));
@@ -541,6 +575,33 @@ function edit_act(GtkCellRendererText $renderer, $sor, $val) {
     writeLog($model->get_value($iter, 0)." járat kezdési ideje: $current -> $val");
 }
 
+function edit_vmax(GtkCellRendererText $renderer, $sor, $val) {
+    //TODO
+    global $model, $act, $trf;
+    $iter = $model->get_iter_from_string($sor);
+    $current = $model->get_value($iter, 2);
+    if($current == $val)
+        return;
+    if($val[0] === "+")
+        $val = $current + @substr($val, 1);
+    else if($val[0] === "-")
+        $val = $current - @substr($val, 1);
+    $model->set($iter, 2, (string)$val);
+    if($sor === "0") { //játékos
+        $con = &$act['consist'];
+    }
+    else {
+        $con = &$trf['con'][$model->get_value($iter, 0)];
+    }
+    $old_A = $con['A'];
+    $con['A'] = str_replace(",", ".", (string)round($val / 3.6, 5));
+    //$repl = '${1}'.$con['A'];
+    //$con['con_file'] = preg_replace('~MaxVelocity \( ([0-9.]+) [0-9.]+ \)~i', $repl, $con['con_file']);
+    $con['con_file'] = str_replace("MaxVelocity ( $old_A $con[B] )", "MaxVelocity ( $con[A] $con[B] )", $con['con_file']);
+    $con['modified'] = true;
+    writeLog($con['con_path']." összeállítás maximális sebessége módosítva: $old_A => $con[A] m/s");
+}
+
 function edit_time($current, $val) {
     if(is_numeric($val))
         $val .= ",";
@@ -594,6 +655,19 @@ function save() {
         writeLog("$trf_path írása");
         writeTrf(iconv(CHARSET, FILESYSTEM_CHARSET, $trf_path), $trf);
         writeLog("Traffic mentve");
+    }
+    writeLog("Összeállítások mentése...");
+    if($act['consist']['modified']){
+        writeLog($act['consist']['con_path']);
+        writeUnicodeFile(fopen($act['consist']['con_path'], "w"), $act['consist']['con_file'], true);
+    }
+    if($trf) {
+        foreach($trf['con'] as $con) {
+            if($con['modified']) {
+                writeLog($con['con_path']);
+                writeUnicodeFile(fopen(iconv(CHARSET, FILESYSTEM_CHARSET, $con['con_path']), "w"), $con['con_file'], true);
+            }
+        }
     }
     popup("Mentve", "info");
 }
@@ -679,7 +753,7 @@ $label3 = new GtkLabel("Biztonsági másolat");
 $folder = new GtkFileChooserButton("Add meg az MSTS helyét!", Gtk::FILE_CHOOSER_ACTION_SELECT_FOLDER);
 $activity = new GtkFileChooserButton("Add meg az Activity helyét!", Gtk::FILE_CHOOSER_ACTION_OPEN);
 $filter = new GtkFileFilter();
-$bizt = new GtkCheckButton();
+$bizt = new GtkCheckButton("Biztonsági másolat készítése");
 $buttonbox = new GtkHButtonBox();
 $button = new GtkButton("Betölt");
 $button2 = new GtkButton("Ment");
@@ -721,26 +795,39 @@ $hbox->pack_start($sentry);
 $hbox->pack_start($button3);
 
 
-$model = new GtkListStore(64, 64);  // GObject::TYPE_STRING === (int)64
-$view = new GtkTreeView($model);
+
+$model = new GtkListStore(64, 64, 32);  // GObject::TYPE_STRING === (int)64           GObject::TYPE_LONG === (int)32
+$view1 = new GtkTreeView($model);
+$scroll1 = new GtkScrolledWindow();
 $col1 = new GtkTreeViewColumn("Járat");
 $col2 = new GtkTreeViewColumn("Kezdés");
-$view->append_column($col1);
-$view->append_column($col2);
+$col3 = new GtkTreeViewColumn("Vmax");
+$view1->append_column($col1);
+$view1->append_column($col2);
+$view1->append_column($col3);
 $renderer1 = new GtkCellRendererText();
 $renderer2 = new GtkCellRendererText();
+$renderer3 = new GtkCellRendererText();
 $col1->pack_start($renderer1, true);
 $col2->pack_start($renderer2, true);
+$col3->pack_start($renderer3, true);
 $col1->set_attributes($renderer1, 'text', 0);
 $col2->set_attributes($renderer2, 'text', 1);
+$col3->set_attributes($renderer3, 'text', 2);
 $renderer2->set_property("editable", true);
 $renderer2->connect("edited", "edit_act");
-$selection = $view->get_selection();
-$view->connect_simple("row-activated", "load_srv");
+$renderer3->set_property("editable", true);
+$renderer3->connect("edited", "edit_vmax");
+$selection = $view1->get_selection();
+$view1->connect_simple("row-activated", "load_srv");
+$scroll1->add($view1);
+$scroll1->set_policy(Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
+
 
 
 $model2 = new GtkListStore(64, 64, 64);  // GObject::TYPE_STRING === (int)64
 $view2 = new GtkTreeView($model2);
+$scroll2 = new GtkScrolledWindow();
 $col2_1 = new GtkTreeViewColumn("Állomás");
 $col2_2 = new GtkTreeViewColumn("Érkezés");
 $col2_3 = new GtkTreeViewColumn("Indulás");
@@ -760,6 +847,8 @@ $renderer2_2->set_property("editable", true);
 $renderer2_3->set_property("editable", true);
 $renderer2_2->connect("edited", "edit_srv");
 $renderer2_3->connect("edited", "edit_srv");
+$scroll2->add($view2);
+$scroll2->set_policy(Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
 
 
 $buttonbox->set_layout(Gtk::BUTTONBOX_SPREAD);
@@ -773,28 +862,35 @@ $button3->set_sensitive(false);
 $button2->connect('clicked', 'save');
 $button3->connect_simple('clicked', 'erk');
 
-$frame1->add($view);
-$frame2->add($view2);
+$frame1->add($scroll1);
+$frame2->add($scroll2);
 $frame1->set_label("Nincs activity betöltve");
 $frame2->set_label("Nincs járat kijelölve");
+$frame1->set_size_request(250, 0);
+
+$hpane = new GtkHPaned();
+$hpane->add1($frame1);
+$hpane->add2($frame2);
 
 /*$table->attach($label1, 0, 1, 0, 1);
 $table->attach($folder, 1, 2, 0, 1); */
-$table->attach($label2, 0, 1, 1, 2);
-$table->attach($activity, 1, 2, 1, 2);
-$table->attach($label3, 0, 1, 2, 3);
-$table->attach($bizt, 1, 2, 2, 3);
-$table->attach($buttonbox, 0, 2, 3, 4);
-$table->attach($hbox, 0, 2, 4, 5);
-$table->attach($frame1, 0, 1, 5, 6);
-$table->attach($frame2, 1, 2, 5, 6);
+$table->attach($label2, 0, 1, 1, 2, Gtk::SHRINK, Gtk::SHRINK);
+$table->attach($activity, 1, 2, 1, 2, Gtk::EXPAND | GTK::FILL, Gtk::SHRINK);
+//$table->attach($label3, 0, 1, 2, 3, Gtk::SHRINK, Gtk::SHRINK);
+$table->attach($bizt, 2, 3, 1, 2, Gtk::SHRINK, Gtk::SHRINK);
+$table->attach($buttonbox, 0, 3, 3, 4, Gtk::EXPAND | GTK::FILL, Gtk::SHRINK);
+$table->attach($hbox, 0, 3, 4, 5, Gtk::EXPAND | GTK::FILL, Gtk::SHRINK);
+/*$table->attach($frame1, 0, 1, 5, 6);
+$table->attach($frame2, 1, 2, 5, 6);  */
+$table->attach($hpane, 0, 3, 5, 6);
+$table->set_homogeneous(false);
 
 $mainbox->pack_start($menubar, false, false);
 $mainbox->pack_start($table, true, true);
 
-$activity->add_filter($filter);
 $filter->add_pattern("*.act");
 $filter->set_name("MSTS Activity fájlok (*.act)");
+$activity->add_filter($filter);
 $folder->set_current_folder($default);
 $activity->set_current_folder($default.'\ROUTES');
 
@@ -802,8 +898,9 @@ $activity->set_current_folder($default.'\ROUTES');
 
 $wnd->add($mainbox);
 $wnd->connect_simple("destroy", array("Gtk", "main_quit"));
-$wnd->set_position(Gtk::WIN_POS_CENTER_ALWAYS);
-$wnd->set_resizable(false);
+//$wnd->set_position(Gtk::WIN_POS_CENTER_ALWAYS);
+//$wnd->set_resizable(false);
+$wnd->set_size_request(540, 430);
 $wnd->set_title("Menetrendmahináló ".VERSION);
 $wnd->show_all();
 Gtk::Main();
